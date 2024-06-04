@@ -50,7 +50,3 @@ python main.py
 ```
 
 2. The application window will open, and you can start scanning user and product barcodes to perform actions.
-
-## Contributing
-
-Contributions are welcome! If you find a bug or have an idea for an improvement, please open an issue or create a pull request.
