@@ -1,18 +1,9 @@
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import openpyxl as xl
+import getpass
 import ctypes
-
-Base = declarative_base()
-
-CONSTANTS = {
-    "take product": "1",
-    "return product": "2",
-    "cancel": "3",
-}
 
 
 def get_display_name():
@@ -27,77 +18,59 @@ def get_display_name():
     return nameBuffer.value
 
 
-# SQLAlchemy Models
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    code = Column(String, unique=True)
-    username = Column(String)
-
-
-class Product(Base):
-    __tablename__ = "products"
-    id = Column(Integer, primary_key=True)
-    code = Column(String, unique=True)
-    name = Column(String)
-    quantity = Column(Integer)
-
-
-class Activity(Base):
-    __tablename__ = "activities"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    product_id = Column(Integer, ForeignKey("products.id"))
-    quantity = Column(Integer)
-    activity = Column(String)
-    date = Column(DateTime)
+CONSTANTS = {"take product": "1", "return product": "2", "cancel": "3"}
 
 
 class InventoryDatabase:
-    def __init__(self, db_url):
-        self.engine = create_engine(db_url)
-        Base.metadata.create_all(self.engine)
-        self.Session = sessionmaker(bind=self.engine)
-        self.session = self.Session()
+    def __init__(self, excel_file):
+        self.excel_file = excel_file
+        self.workbook = None
+        self.products = None
+        self.users = None
+        self.activities = None
 
-    def seed_data(self):
-        # Seed Users
-        self.session.add_all(
-            [
-                User(code="123456789", username="Arkadiusz Żołędziowski"),
-                User(code="987654321", username="Olgierd Krzyzaniak"),
-            ]
-        )
+        self.load_inventory()
 
-        # Seed Products
-        self.session.add_all(
-            [
-                Product(code="123A", name="Łożyske PWC", quantity=10),
-                Product(code="AAAA", name="Tuleja2115", quantity=10),
-                Product(code="Ssawka15", name="Ssawka 15", quantity=10),
-                Product(code="Griper123", name="Griper", quantity=10),
-                Product(code="AdapterMay", name="Adapter may", quantity=10),
-            ]
-        )
-
-        self.session.commit()
+    def load_inventory(self):
+        try:
+            self.workbook = xl.load_workbook(self.excel_file)
+            self.products = self.workbook["Products"]
+            self.users = self.workbook["Users"]
+            self.activities = self.workbook["Activities"]
+        except FileNotFoundError:
+            self.workbook = xl.Workbook()
+            self.products = self.workbook.create_sheet("Products")
+            self.products.append(["Kod produktu", "Product Name", "Ilość"])
+            self.users = self.workbook.create_sheet("Users")
+            self.users.append(["Kod pracownika", "Username"])
+            self.activities = self.workbook.create_sheet("Activities")
+            self.activities.append(
+                ["Kod pracownika", "Kod produktu", "Ilość", "Czynność", "Data"]
+            )
+            self.workbook.save(self.excel_file)
 
     def find_user_by_code(self, user_code):
-        return self.session.query(User).filter_by(code=user_code).first()
+        for row in self.users.iter_rows(min_row=2, values_only=True):
+            if str(row[0]) == str(user_code):
+                return row
+        return None
 
     def find_product_by_code(self, product_code):
-        return self.session.query(Product).filter_by(code=product_code).first()
+        for row in self.products.iter_rows(min_row=2, values_only=False):
+            if str(row[0].value) == str(product_code):
+                return row
+        return None
+
+    def update_current_user(self, user_code):
+        user = self.find_user_by_code(user_code)
+        if user:
+            self.current_user = user[1]
+        else:
+            self.current_user = None
 
     def add_activity(self, user_id, product_id, quantity, activity, date):
-        activity = Activity(
-            user_id=user_id,
-            product_id=product_id,
-            quantity=quantity,
-            activity=activity,
-            date=date,
-        )
-        self.session.add(activity)
-        self.session.commit()
+        self.activities.append([user_id, product_id, quantity, activity, date])
+        self.workbook.save(self.excel_file)
 
 
 class InventoryApp:
@@ -224,18 +197,18 @@ class InventoryApp:
 
             elif user := self.database.find_user_by_code(barcode):
                 # Set the current user if the user exists
-                if user.code == self.current_user and self.current_user is not None:
+                if user[0] == self.current_user and self.current_user is not None:
                     self.save_data()
                     self.entry_barcode.delete(0, tk.END)
                     self.label_current_user.config(text="Current User: None")
                     # self.error_label.config(text="")
                     return
-                elif user.code != self.current_user and self.current_user is not None:
+                elif user[0] != self.current_user and self.current_user is not None:
                     self.save_data()
-                self.current_user = user.code
+                self.current_user = user[0]
                 # Update the label displaying the current user
                 self.label_current_user.config(
-                    text=f"Current User: {user.username} ({self.current_user})"
+                    text=f"Current User: {user[1]} ({self.current_user})"
                 )
                 # self.error_label.config(text="")
 
@@ -258,14 +231,14 @@ class InventoryApp:
                 # Check if a record with the same Product ID already exists
                 item_id = self.find_item_by_product_id(product_id)
 
-                product = self.database.find_product_by_code(product_id)
-                if not product:
+                product_row = self.database.find_product_by_code(product_id)
+                if not product_row:
                     self.error_label.config(
                         text=f'Produkt z kodem "{product_id}" nie istnieje'
                     )
                     self.entry_barcode.delete(0, tk.END)
                     return
-                current_quantity = product.quantity if product else 0
+                current_quantity = int(product_row[2].value) if product_row else 0
                 quantity_in_table = (
                     int(self.tree.item(item_id, "values")[3]) if item_id else 0
                 )
@@ -317,12 +290,12 @@ class InventoryApp:
 
     def insert_table_record(self, user_id, product_id, quantity, date):
         # Check if the product code already exists in the 'Products' sheet
-        product = self.database.find_product_by_code(product_id)
+        product_row = self.database.find_product_by_code(product_id)
 
-        if product:
+        if product_row:
             # Product code already exists, update the quantity in 'Products' sheet
             # self.error_label.config(text="")
-            current_quantity = product.quantity
+            current_quantity = int(product_row[2].value)
             updated_quantity = current_quantity + int(quantity)
 
             # Insert a new record in the table
@@ -351,23 +324,19 @@ class InventoryApp:
         # Iterate over the items in the table and save data to the 'Activities' sheet
         for item_id in self.tree.get_children():
             values = self.tree.item(item_id, "values")
-            user_id, product_id, quantity, activity, date_str = (
+            user_id, product_id, quantity, activity, date = (
                 values[1],
                 values[2],
                 values[3],
                 values[4],
                 values[5],
             )
-
-            # Convert date string to DateTime object
-            date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-
             self.database.add_activity(
                 user_id, product_id, int(quantity), activity, date
             )
 
         # Save the workbook
-        # self.database.workbook.save(self.database.excel_file)
+        self.database.workbook.save(self.database.excel_file)
 
         # Update the quantity of products in the 'Products' sheet
         for item_id in self.tree.get_children():
@@ -375,17 +344,16 @@ class InventoryApp:
             product_id, quantity = values[2], values[3]
 
             # Find the product in the 'Products' sheet
-            product = self.database.find_product_by_code(product_id)
-            if product:
-                current_quantity = product.quantity
+            product_row = self.database.find_product_by_code(product_id)
+            if product_row:
+                current_quantity = int(product_row[2].value)
                 updated_quantity = current_quantity + int(quantity)
-                # self.database.products.cell(
-                #     row=product_row[0].row, column=3, value=updated_quantity
-                # )
-                product.quantity = updated_quantity
+                self.database.products.cell(
+                    row=product_row[0].row, column=3, value=updated_quantity
+                )
 
         # Save the workbook again after updating the 'Products' sheet
-        # self.database.workbook.save(self.database.excel_file)
+        self.database.workbook.save(self.database.excel_file)
 
         # Clear the table
         for item_id in self.tree.get_children():
@@ -399,15 +367,8 @@ class InventoryApp:
 
 
 if __name__ == "__main__":
-    excel_file = "inventory.db"  # SQLite database file
-    database = InventoryDatabase(f"sqlite:///{excel_file}")
-
-    # Seed data
-    if (
-        not database.session.query(User).first()
-        or not database.session.query(Product).first()
-    ):
-        database.seed_data()
+    excel_file = "inventory.xlsx"
+    database = InventoryDatabase(excel_file)
 
     root = tk.Tk()
     app = InventoryApp(root, database)
